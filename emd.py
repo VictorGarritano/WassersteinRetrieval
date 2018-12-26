@@ -1,102 +1,130 @@
 from __future__ import division
-from scipy import sparse
-from wass_funcs import  load_embeddings, mrr_precision_at_k, clean_corpus_using_embeddings_vocabulary, WassersteinDistances 
+from wass_funcs import (load_embeddings,
+                        clean_corpus_using_embeddings_vocabulary,
+                        WassersteinDistances, precisions_at_k)
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
-import numpy as np, sys, codecs, nltk.data
-from sklearn.preprocessing import normalize
+import numpy as np
+import sys
+import nltk.data
+import pandas as pd
+from preprocess_twitter import tokenize
 
-vectors_en = load_embeddings(sys.argv[1], 300) # Load vectors for lang. 1, English by default
-vectors_fr = load_embeddings(sys.argv[2], 300) # Load vectors for lang. 2
+import logging
 
-en  = codecs.open(sys.argv[3], encoding="utf8").read().splitlines() # Open docs of lang. 1 as utf8, read them as a list of documents
-fr = codecs.open(sys.argv[4], encoding="utf8").read().splitlines() # Same for lang. 2.. Encoding here is important
+logging.basicConfig(filename='log-{0}-align-{1}-{2}.log'.format(
+    sys.argv[6], sys.argv[3], sys.argv[4]), level=logging.DEBUG,
+                    format='%(asctime)s - %(levelname)s: %(message)s',
+                    datefmt='%m/%d/%Y %I:%M:%S %p')
 
-word2keep = int(sys.argv[5]) # Max words of each document. Will be used later for speeding calculations.
-if sys.argv[6]=="greek": # There is an issue with \sigma in the embeddings. Greeks have different sigma symbol in the word or in the end 
-    fr = [i.replace(u"\u03c2", u"\u03c3") for i in fr]
+print('loading news vectors')
+vectors_news = load_embeddings(sys.argv[1], 300)
+print('loading tweets vectors')
+vectors_tweets = load_embeddings(sys.argv[2], 300)
 
-clean_en, clean_vectors_en, keys_en = clean_corpus_using_embeddings_vocabulary(word2keep, set(vectors_en.keys()), en, vectors_en, "en", set(nltk.corpus.stopwords.words("english")))
-clean_fr, clean_vectors_fr, keys_fr = clean_corpus_using_embeddings_vocabulary(word2keep, set(vectors_fr.keys()), fr, vectors_fr, "fr", set(nltk.corpus.stopwords.words(sys.argv[6])))
+print("loading dataset")
+df = pd.read_csv('whole_dataset_binary_classification.csv')
 
-common_keys = set(keys_en).intersection(set(keys_fr)) # Article ids that have more than 5 words in each language..
-common_keys = np.array(list(common_keys)) # ids of long docs for both languages
-common_keys = common_keys[:500] # Make the CLDR experiement with 500 documents
-instances = len(common_keys)
-clean_en, clean_fr = list(clean_en[common_keys]), list(clean_fr[common_keys]) # clean_en/fr are the two corpora that will be used for CLDR
+print('opening news docs')
+news = df['article_text'].unique()
 
-print "Starting with documents of size", len(clean_en), len(clean_fr)
+print('opening tweet docs')
+tweets = df['tweet_text'].apply(lambda row: tokenize(row))
 
-del vectors_fr, vectors_en, en, fr # to save space in memory
+word2keep = sys.argv[5]  # Max words of each document.
 
-vec1 = CountVectorizer().fit(clean_en+clean_fr) # get the vocabulary of the corpus
+print('cleaning news corpus')
+clean_news, clean_vectors_news, keys_news = \
+    clean_corpus_using_embeddings_vocabulary(word2keep,
+                                             set(vectors_news.keys()),
+                                             news, vectors_news,
+                                             "news",
+                                             set(nltk.corpus.stopwords.words(
+                                                 "english")))
+print('cleaning tweets corpus')
+clean_tweets, clean_vectors_tweets, keys_tweets = \
+    clean_corpus_using_embeddings_vocabulary(word2keep,
+                                             set(vectors_tweets.keys()),
+                                             tweets, vectors_tweets,
+                                             "tweets",
+                                             set(nltk.corpus.stopwords.words(
+                                                 "english")))
 
-common = [word for word in vec1.get_feature_names() if word in clean_vectors_en or word in clean_vectors_fr] # Keep words with associated embeddings e.g., get the fixed vocabulary
-W_common= []
-for w in common: # Similarly, to save memory keep only the embeddings of words that appear in the corpus. 
-    if w in clean_vectors_en:
-        W_common.append(np.array(clean_vectors_en[w]) )
+print("Starting with documents of size", len(clean_news), len(clean_tweets))
+
+del vectors_tweets, vectors_news  # to save space in memory
+
+clean_news, clean_tweets = clean_news.tolist(), clean_tweets.tolist()
+
+print("Starting CountVectorizer")
+vec1 = CountVectorizer().fit(clean_news+clean_tweets)
+
+print("Keeping words with associated embeddings")
+common = [word for word in vec1.get_feature_names() if word in
+          clean_vectors_news or word in clean_vectors_tweets]
+W_common = []
+
+print("Keeping words that appear in the corpus")
+for w in common:
+    if w in clean_vectors_news:
+        W_common.append(np.array(clean_vectors_news[w]))
     else:
-        W_common.append(np.array(clean_vectors_fr[w]) )
-del clean_vectors_en, clean_vectors_fr # Remove the rest of the embeddings
-print "The vocabulary size is:", len(W_common)
-W_common = np.array(W_common) 
-W_common = normalize(W_common)
-vect = TfidfVectorizer(vocabulary=common, dtype=np.double, norm=None, )# Tf-idf representation of docs in both lang. 1 and lang. 2
-vect.fit(clean_en+clean_fr)
-X_train_idf = vect.transform(clean_en) # Lang. 1: tf-idf representation of the corpus
-X_test_idf = vect.transform(clean_fr) # Lang. 2: tf-idf representation of the corpus 
+        W_common.append(np.array(clean_vectors_tweets[w]))
+del clean_vectors_news, clean_vectors_tweets
 
+print("The vocabulary size is:", len(W_common))
+W_common = np.array(W_common)
+
+print("Generating idf representation")
+vect = TfidfVectorizer(vocabulary=common, dtype=np.double, norm=None, )
+vect.fit(clean_news+clean_tweets)
+X_train_idf = vect.transform(clean_news)
+X_test_idf = vect.transform(clean_tweets)
+
+print("Generating tf representation")
 vect_tf = CountVectorizer(vocabulary=common, dtype=np.double)
-vect_tf.fit(clean_en+clean_fr)
-X_train_tf = vect_tf.transform(clean_en) # Lang. 1: tf representation of the corpus
-X_test_tf = vect_tf.transform(clean_fr) # Lang. 2: tf representation of the corpus
+vect_tf.fit(clean_news+clean_tweets)
+X_train_tf = vect_tf.transform(clean_news)
+X_test_tf = vect_tf.transform(clean_tweets)
 
-######################################################################################
-print "Starting experiments with WMD - tfidf: Retrieve English documents, given queries in %s"% sys.argv[6]
-clf = WassersteinDistances(W_embed=W_common, n_neighbors=5, n_jobs=10)
-clf.fit(X_train_idf[:instances], np.ones(instances))
-dist, preds = clf.kneighbors(X_test_idf[:instances], n_neighbors=instances)
-print("Scores:", mrr_precision_at_k(range(len(preds)), preds))
 
-print "Starting experiments with Sinkhorn - tfidf: Retrieve English documents, given queries in %s"% sys.argv[6] 
-clf = WassersteinDistances(W_embed=W_common, n_neighbors=5, n_jobs=10, sinkhorn=True)
-clf.fit(X_train_idf[:instances], np.ones(instances))
-dist, preds = clf.kneighbors(X_test_idf[:instances], n_neighbors=instances)
-print("Scores:", mrr_precision_at_k(range(len(preds)), preds))
+valid_idxs = [0, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 21,
+              22, 23, 24, 25, 26, 28, 29, 30, 32, 34, 35, 36, 37, 39, 40, 41,
+              43, 44, 45, 46, 50, 51, 52, 53, 55, 56, 57, 59, 61, 64, 68, 69,
+              70, 73, 74, 75, 76, 78, 80, 83, 84, 85, 86, 87, 88, 90, 91, 92,
+              93, 94, 97, 98]
 
-print "Starting experiments with WMD - tf: Retrieve English documents, given queries in %s"% sys.argv[6]
-clf = WassersteinDistances(W_embed=W_common, n_neighbors=5, n_jobs=10)
-clf.fit(X_train_tf[:instances], np.ones(instances))
-dist, preds = clf.kneighbors(X_test_tf[:instances], n_neighbors=instances)
-print("Scores:", mrr_precision_at_k(range(len(preds)), preds))
+print("Starting experiments - idf: Retrieve tweets, given news queries")
+clf = WassersteinDistances(W_embed=W_common, n_neighbors=20, n_jobs=16)
 
-print "Starting experiments with Sinkhorn - tf: Retrieve English documents, given queries in %s"% sys.argv[6]
-clf = WassersteinDistances(W_embed=W_common, n_neighbors=5, n_jobs=10, sinkhorn=True)
-clf.fit(X_train_tf[:instances], np.ones(instances))
-dist, preds = clf.kneighbors(X_test_tf[:instances], n_neighbors=instances)
-print("Scores:", mrr_precision_at_k(range(len(preds)), preds))
-#####################################################################################3
-print  "Starting experiments with WMD - tfidf: Retrieve %s documents, given queries in English."% sys.argv[6]
-clf = WassersteinDistances(W_embed=W_common, n_neighbors=5, n_jobs=10)
-clf.fit(X_test_idf[:instances], np.ones(instances))
-dist, preds = clf.kneighbors(X_train_idf[:instances], n_neighbors=instances)
-print("Scores:", mrr_precision_at_k(range(len(preds)), preds))
+mean_aps = []
 
-print "Starting experiments with Sinkhorn - tfidf: Retrieve %s documents, given queries in English."% sys.argv[6]
-clf = WassersteinDistances(W_embed=W_common, n_neighbors=5, n_jobs=10, sinkhorn=True)
-clf.fit(X_test_idf[:instances], np.ones(instances))
-dist, preds = clf.kneighbors(X_train_idf[:instances], n_neighbors=instances)
-print("Scores:", mrr_precision_at_k(range(len(preds)), preds))
+logging.warning("=======IDF=======")
 
-print "Starting experiments with WMD - tf: Retrieve %s documents, given queries in English."% sys.argv[6]
-clf = WassersteinDistances(W_embed=W_common, n_neighbors=5, n_jobs=10)
-clf.fit(X_test_tf[:instances], np.ones(instances))
-dist, preds = clf.kneighbors(X_train_tf[:instances], n_neighbors=instances)
-print("Scores:", mrr_precision_at_k(range(len(preds)), preds))
+clf.fit(X_test_idf, np.ones(X_test_idf.shape[0]))
 
-print "Starting experiments with Sinkhorn - tf: Retrieve %s documents, given queries in English."% sys.argv[6]
-clf = WassersteinDistances(W_embed=W_common, n_neighbors=5, n_jobs=10, sinkhorn=True)
-clf.fit(X_test_tf[:instances], np.ones(instances))
-dist, preds = clf.kneighbors(X_train_tf[:instances], n_neighbors=instances)
-print("Scores:", mrr_precision_at_k(range(len(preds)), preds))
+for i in valid_idxs:
+    logging.info('STARTING #{0}'.format(i))
+    logging.info('getting nearest neighbors')
+    dist, preds = clf.kneighbors(X_train_idf[i], n_neighbors=80)
+    p5, p10, ap = precisions_at_k(df, news, i, dist, preds)
+    logging.info('P@5: {0} \t P@10: {1}'.format(p5, p10))
+    mean_aps.append(ap)
+logging.info('MAP@10: {0}\n\n'.format(np.mean(np.array(mean_aps))))
 
+print("Starting experiments- tf: Retrieve tweets, given news queries")
+clf = WassersteinDistances(W_embed=W_common, n_neighbors=20, n_jobs=16)
+
+mean_aps = []
+
+logging.warning("=======TF=======")
+
+clf.fit(X_test_tf, np.ones(X_test_tf.shape[0]))
+
+for i in valid_idxs:
+    logging.info('STARTING #{0}'.format(i))
+    logging.info('getting nearest neighbors')
+    dist, preds = clf.kneighbors(X_train_tf[i], n_neighbors=80)
+    p5, p10, ap = precisions_at_k(df, news, i, dist, preds)
+    logging.info('P@5: {0} \t P@10: {1}'.format(p5, p10))
+    mean_aps.append(ap)
+logging.info('MAP@10: {0}\n\n'.format(np.mean(np.array(mean_aps))))
