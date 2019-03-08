@@ -97,34 +97,50 @@ print("Starting experiments - idf: Retrieve tweets, given news queries")
 clf = WassersteinDistances(W_embed=W_common, n_neighbors=20, n_jobs=16)
 
 mean_aps = []
+p10s, p5s = []
 
-logging.warning("=======IDF=======")
+logging.warning("!-------IDF-------!")
 
 clf.fit(X_test_idf, np.ones(X_test_idf.shape[0]))
 
 for i in valid_idxs:
     logging.info('STARTING #{0}'.format(i))
     logging.info('getting nearest neighbors')
+
     dist, preds = clf.kneighbors(X_train_idf[i], n_neighbors=80)
     p5, p10, ap = precisions_at_k(df, news, i, dist, preds)
+    p10s.append(p10)
+    p5s.append(p5)
+
     logging.info('P@5: {0} \t P@10: {1}'.format(p5, p10))
     mean_aps.append(ap)
+
+logging.info('MEAN P@5: {0}'.format(np.mean(p5s)))
+logging.info('MEAN P@10: {0}'.format(np.mean(p10s)))
 logging.info('MAP@10: {0}\n\n'.format(np.mean(np.array(mean_aps))))
 
 print("Starting experiments- tf: Retrieve tweets, given news queries")
 clf = WassersteinDistances(W_embed=W_common, n_neighbors=20, n_jobs=16)
 
 mean_aps = []
+p10s, p5s = []
 
-logging.warning("=======TF=======")
+logging.warning("!--------TF--------!")
 
 clf.fit(X_test_tf, np.ones(X_test_tf.shape[0]))
 
 for i in valid_idxs:
     logging.info('STARTING #{0}'.format(i))
     logging.info('getting nearest neighbors')
+
     dist, preds = clf.kneighbors(X_train_tf[i], n_neighbors=80)
     p5, p10, ap = precisions_at_k(df, news, i, dist, preds)
+    p10s.append(p10)
+    p5s.append(p5)
+
     logging.info('P@5: {0} \t P@10: {1}'.format(p5, p10))
     mean_aps.append(ap)
+
+logging.info('MEAN P@5: {0}'.format(np.mean(p5s)))
+logging.info('MEAN P@10: {0}'.format(np.mean(p10s)))
 logging.info('MAP@10: {0}\n\n'.format(np.mean(np.array(mean_aps))))
